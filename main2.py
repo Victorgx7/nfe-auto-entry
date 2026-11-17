@@ -16,8 +16,18 @@ def ler_xml_nfe(caminho_arquivo):
     with open(caminho_arquivo, "rb") as f:
         doc = xmltodict.parse(f)
 
-    # Acessa o nó principal da NF-e
-    inf_nfe = doc["nfeProc"]["NFe"]["infNFe"]
+    # Aceita XML autorizado (nfeProc) e XML sem o protocolo (NFe).
+    if "nfeProc" in doc:
+        nfe = doc["nfeProc"]["NFe"]
+    elif "NFe" in doc:
+        nfe = doc["NFe"]
+    else:
+        raise ValueError(
+            f"Formato de XML não reconhecido em '{caminho_arquivo}': "
+            "nó NFe não encontrado"
+        )
+
+    inf_nfe = nfe["infNFe"]
 
     # Garante que 'det' (itens) seja sempre uma lista, mesmo se a nota tiver 1 só item
     itens_raw = inf_nfe["det"]
@@ -51,7 +61,9 @@ def lancar_no_sistema(dados_nota):
         page = browser.new_page()
 
         # 1. Acessar o sistema
-        page.goto("https://app.gdoorweb.com.br/movimentos/nf-e/saidas/1769/editar", wait_until="domcontentloaded")
+        #Incluir input pedindo ID da nota
+        idNota = input("Informe o ID da nota: ")
+        page.goto("https://app.gdoorweb.com.br/movimentos/nf-e/saidas/" + idNota + "/editar", wait_until="domcontentloaded")
 
         # 2. Login (Substitua os seletores pelos do seu sistema)
         page.locator('input[name="email"]').wait_for(state="visible")
@@ -96,12 +108,21 @@ def lancar_no_sistema(dados_nota):
                 try:
                     opcao_produto.wait_for(state="visible", timeout=5000)
                 except PlaywrightTimeout as exc:
-                    raise RuntimeError(
-                        "Produto não encontrado pelo código "
-                        f"'{prod['codigo']}' nem pelo nome '{prod['nome']}'"
-                    ) from exc
+                    print(
+                        "Produto não encontrado automaticamente. "
+                        f"Código: {prod['codigo']} | Nome: {prod['nome']}"
+                    )
+                    input(
+                        "Selecione o produto manualmente no navegador e "
+                        "pressione Enter para continuar..."
+                    )
+                    if not produto_input.input_value().strip():
+                        raise RuntimeError(
+                            "O produto não foi selecionado manualmente."
+                        ) from exc
 
-            opcao_produto.click()
+            if opcao_produto.is_visible():
+                opcao_produto.click()
             page.wait_for_timeout(1000)
 
             quantidade = page.locator('input[data-placeholder="Quantidade"]')
