@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+from decimal import Decimal
 from pathlib import Path
 from xml.parsers.expat import ExpatError
 
@@ -53,11 +54,11 @@ def lancar_no_sistema(dados_nota):
         # 2. Login (Substitua os seletores pelos do seu sistema)
         page.locator('input[name="email"]').wait_for(state="visible")
         page.click('input[name="email"]')
-        page.type('input[name="email"]', "##", delay=80)
+        page.type('input[name="email"]', "suporte@interagiti.com.br", delay=80)
         page.click('button[type="submit"]')
         page.locator('input[name="password"]').wait_for(state="visible")
         page.click('input[name="password"]')
-        page.type('input[name="password"]', "##", delay=80)
+        page.type('input[name="password"]', "123456", delay=80)
         page.get_by_role("button", name="Entrar").click()
 
         # Espera a página carregar após o login
@@ -76,11 +77,39 @@ def lancar_no_sistema(dados_nota):
             page.locator(
                 'button[mattooltip="Adicionar produto (Insert)"]'
             ).click()
-            page.fill('#campo-nome-produto', prod["nome"])
-            page.fill('#campo-quantidade', prod["quantidade"])
-            page.fill('#campo-valor', prod["valor_unitario"])
-            page.click('#botao-confirmar-item')
-            time.sleep(0.5) # Pequena pausa para o sistema processar
+            produto_input = page.get_by_role("combobox", name="Produto")
+            produto_input.fill(prod["nome"])
+            opcao_produto = (
+                page.get_by_role("option")
+                .filter(has_text=prod["nome"])
+                .first
+            )
+            opcao_produto.wait_for(state="visible")
+            opcao_produto.click()
+
+            quantidade = page.locator('input[data-placeholder="Quantidade"]')
+            quantidade_decimal = Decimal(str(prod["quantidade"]))
+            if quantidade_decimal == quantidade_decimal.to_integral_value():
+                quantidade_texto = str(int(quantidade_decimal))
+            else:
+                quantidade_texto = (
+                    format(quantidade_decimal, "f")
+                    .rstrip("0")
+                    .rstrip(".")
+                    .replace(".", ",")
+                )
+
+            quantidade.click()
+            quantidade.press("Control+A")
+            quantidade.type(quantidade_texto, delay=50)
+            quantidade.blur()
+            page.wait_for_timeout(500)
+            if not quantidade.input_value():
+                raise RuntimeError(
+                    f"A quantidade não foi aplicada para o produto: {prod['nome']}"
+                )
+            page.get_by_role("button", name="Confirmar").click()
+            time.sleep(0.8) # Pequena pausa para o sistema processar
 
         print("Preenchimento concluído! Confira os dados na tela antes de salvar.")
 
