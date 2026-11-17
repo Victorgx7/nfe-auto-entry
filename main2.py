@@ -48,23 +48,24 @@ def lancar_no_sistema(dados_nota):
         page = browser.new_page()
 
         # 1. Acessar o sistema
-        page.goto("https://app.gdoorweb.com.br/login", wait_until="domcontentloaded")
+        page.goto("https://app.gdoorweb.com.br/movimentos/nf-e/saidas/1769/editar", wait_until="domcontentloaded")
 
         # 2. Login (Substitua os seletores pelos do seu sistema)
         page.locator('input[name="email"]').wait_for(state="visible")
         page.click('input[name="email"]')
-        page.type('input[name="email"]', "seuemail@gmail.com", delay=80)
+        page.type('input[name="email"]', "##", delay=80)
         page.click('button[type="submit"]')
         page.locator('input[name="password"]').wait_for(state="visible")
         page.click('input[name="password"]')
-        page.type('input[name="password"]', "SuaSenha", delay=80)
-        page.click('button[type="submit"]')
+        page.type('input[name="password"]', "##", delay=80)
+        page.get_by_role("button", name="Entrar").click()
 
         # Espera a página carregar após o login
         page.wait_for_load_state("networkidle")
 
         # 3. Ir para a tela de entrada de nota(alterar esse url conforme o sistema do cliente)
-        page.goto("https://app.gdoorweb.com.br/movimentos/nf-e/saidas/1769/editar")
+        # O código abaixo está dando um erro que ele fica fazendo retorno para tela de login.
+        #page.goto("https://app.gdoorweb.com.br/movimentos/nf-e/saidas/1769/editar", wait_until="domcontentloaded")
 
         # 4. Preencher Cabeçalho (delay=50 simula digitação humana)
         #page.type('#campo-numero-nota', dados_nota["numero_nota"], delay=50)
@@ -72,7 +73,9 @@ def lancar_no_sistema(dados_nota):
 
         # 5. Preencher os Produtos e forncedor em Loop
         for prod in dados_nota["produtos"]:
-            page.click('')
+            page.locator(
+                'button[mattooltip="Adicionar produto (Insert)"]'
+            ).click()
             page.fill('#campo-nome-produto', prod["nome"])
             page.fill('#campo-quantidade', prod["quantidade"])
             page.fill('#campo-valor', prod["valor_unitario"])
