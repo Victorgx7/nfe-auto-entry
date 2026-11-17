@@ -48,11 +48,16 @@ def lancar_no_sistema(dados_nota):
         page = browser.new_page()
 
         # 1. Acessar o sistema
-        page.goto("https://app.gdoorweb.com.br/login")
+        page.goto("https://app.gdoorweb.com.br/login", wait_until="domcontentloaded")
 
         # 2. Login (Substitua os seletores pelos do seu sistema)
-        page.fill('input[name="usuario"]', "suporte@interagiti.com.br")
-        page.fill('input[name="senha"]', "123456")
+        page.locator('input[name="email"]').wait_for(state="visible")
+        page.click('input[name="email"]')
+        page.type('input[name="email"]', "seuemail@gmail.com", delay=80)
+        page.click('button[type="submit"]')
+        page.locator('input[name="password"]').wait_for(state="visible")
+        page.click('input[name="password"]')
+        page.type('input[name="password"]', "SuaSenha", delay=80)
         page.click('button[type="submit"]')
 
         # Espera a página carregar após o login
