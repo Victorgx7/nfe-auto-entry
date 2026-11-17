@@ -31,14 +31,16 @@ def ler_xml_nfe(caminho_arquivo):
             "codigo": prod["cProd"],
             "nome": prod["xProd"],
             "quantidade": prod["qCom"],
-            "valor_unitario": prod["vUnCom"]
+            "valor_unitario": prod["vUnCom"],
+            "codigo_fiscal": prod["CFOP"]
         })
 
     return {
         "numero_nota": inf_nfe["ide"]["nNF"],
         "cnpj_emitente": inf_nfe["emit"]["CNPJ"],
         "valor_total": inf_nfe["total"]["ICMSTot"]["vNF"],
-        "produtos": produtos
+        "produtos": produtos,
+        "codigo_fiscal": [produto["codigo_fiscal"] for produto in produtos]
     }
 
 # --- PASSO 2: DIGITAR NO SISTEMA WEB ---
@@ -78,14 +80,29 @@ def lancar_no_sistema(dados_nota):
                 'button[mattooltip="Adicionar produto (Insert)"]'
             ).click()
             produto_input = page.get_by_role("combobox", name="Produto")
-            produto_input.fill(prod["nome"])
-            opcao_produto = (
-                page.get_by_role("option")
-                .filter(has_text=prod["nome"])
-                .first
-            )
-            opcao_produto.wait_for(state="visible")
+            produto_input.fill(prod["codigo"])
+            opcao_produto = page.get_by_role("option").filter(
+                has_text=prod["codigo"]
+            ).first
+
+            try:
+                opcao_produto.wait_for(state="visible", timeout=3000)
+            except PlaywrightTimeout:
+                produto_input.press("Control+A")
+                produto_input.fill(prod["nome"])
+                opcao_produto = page.get_by_role("option").filter(
+                    has_text=prod["nome"]
+                ).first
+                try:
+                    opcao_produto.wait_for(state="visible", timeout=5000)
+                except PlaywrightTimeout as exc:
+                    raise RuntimeError(
+                        "Produto não encontrado pelo código "
+                        f"'{prod['codigo']}' nem pelo nome '{prod['nome']}'"
+                    ) from exc
+
             opcao_produto.click()
+            page.wait_for_timeout(1000)
 
             quantidade = page.locator('input[data-placeholder="Quantidade"]')
             quantidade_decimal = Decimal(str(prod["quantidade"]))
@@ -98,7 +115,6 @@ def lancar_no_sistema(dados_nota):
                     .rstrip(".")
                     .replace(".", ",")
                 )
-
             quantidade.click()
             quantidade.press("Control+A")
             quantidade.type(quantidade_texto, delay=50)
@@ -108,7 +124,16 @@ def lancar_no_sistema(dados_nota):
                 raise RuntimeError(
                     f"A quantidade não foi aplicada para o produto: {prod['nome']}"
                 )
-            page.get_by_role("button", name="Confirmar").click()
+            tributos = page.get_by_role("button", name="Tributos", exact=True)
+            tributos.wait_for(state="visible")
+            tributos.click()
+
+            cfop = page.locator('input[data-placeholder="CFOP"]')
+            cfop.wait_for(state="visible")
+            cfop.fill(prod["codigo_fiscal"])
+            cfop.blur()
+
+            page.get_by_role("button", name="Confirmar", exact=True).click()
             time.sleep(0.8) # Pequena pausa para o sistema processar
 
         print("Preenchimento concluído! Confira os dados na tela antes de salvar.")
