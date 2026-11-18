@@ -1,4 +1,23 @@
+# Python
 __pycache__/
 *.py[cod]
 .venv/
+venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# NF-e files contain fiscal and business data
+notasXMLs/*.xml
+*.pfx
+*.p12
+*.pem
+*.key
+
+# IDE and OS files
 .idea/
+.vscode/
+.DS_Store
+Thumbs.db
