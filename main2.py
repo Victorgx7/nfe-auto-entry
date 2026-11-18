@@ -63,16 +63,16 @@ def lancar_no_sistema(dados_nota):
         # 1. Acessar o sistema
         #Incluir input pedindo ID da nota
         idNota = input("Informe o ID da nota: ")
-        page.goto("https://app.gdoorweb.com.br/movimentos/nf-e/saidas/" + idNota + "/editar", wait_until="domcontentloaded")
+        page.goto("https:#EndereçoOndeaNFeVaiSerPrenchida" + idNota + "/editar", wait_until="domcontentloaded")
 
         # 2. Login (Substitua os seletores pelos do seu sistema)
         page.locator('input[name="email"]').wait_for(state="visible")
         page.click('input[name="email"]')
-        page.type('input[name="email"]', "suporte@interagiti.com.br", delay=80)
+        page.type('input[name="email"]', "#EmailDeLogin", delay=80)
         page.click('button[type="submit"]')
         page.locator('input[name="password"]').wait_for(state="visible")
         page.click('input[name="password"]')
-        page.type('input[name="password"]', "123456", delay=80)
+        page.type('input[name="password"]', "#SenhaDeLogin", delay=80)
         page.get_by_role("button", name="Entrar").click()
 
         # Espera a página carregar após o login
