@@ -11,25 +11,39 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout, sync_pl
 
 load_dotenv()
 
+# Configurações externas: nunca armazene credenciais ou URLs privadas no código.
+BASE_URL = os.getenv("GDOOR_BASE_URL", "").rstrip("/")
+LOGIN_EMAIL = os.getenv("GDOOR_EMAIL", "")
+LOGIN_PASSWORD = os.getenv("GDOOR_PASSWORD", "")
+
+
+def validar_configuracao():
+    ausentes = [
+        nome for nome, valor in {
+            "GDOOR_BASE_URL": BASE_URL,
+            "GDOOR_EMAIL": LOGIN_EMAIL,
+            "GDOOR_PASSWORD": LOGIN_PASSWORD,
+        }.items() if not valor
+    ]
+    if ausentes:
+        raise RuntimeError(
+            "Configure as variáveis no arquivo .env: " + ", ".join(ausentes)
+        )
+
+
 ## --- PASSO 1: LER O XML ---
 def ler_xml_nfe(caminho_arquivo):
     with open(caminho_arquivo, "rb") as f:
         doc = xmltodict.parse(f)
 
-    # Aceita XML autorizado (nfeProc) e XML sem o protocolo (NFe).
     if "nfeProc" in doc:
         nfe = doc["nfeProc"]["NFe"]
     elif "NFe" in doc:
         nfe = doc["NFe"]
     else:
-        raise ValueError(
-            f"Formato de XML não reconhecido em '{caminho_arquivo}': "
-            "nó NFe não encontrado"
-        )
+        raise ValueError("Formato de XML não reconhecido: nó NFe não encontrado")
 
     inf_nfe = nfe["infNFe"]
-
-    # Garante que 'det' (itens) seja sempre uma lista, mesmo se a nota tiver 1 só item
     itens_raw = inf_nfe["det"]
     if isinstance(itens_raw, dict):
         itens_raw = [itens_raw]
@@ -53,40 +67,32 @@ def ler_xml_nfe(caminho_arquivo):
         "codigo_fiscal": [produto["codigo_fiscal"] for produto in produtos]
     }
 
+
 # --- PASSO 2: DIGITAR NO SISTEMA WEB ---
 def lancar_no_sistema(dados_nota):
+    validar_configuracao()
     with sync_playwright() as p:
-        # headless=False faz o navegador aparecer na tela para você ver acontecendo
         browser = p.chromium.launch(headless=False)
         page = browser.new_page()
 
-        # 1. Acessar o sistema
-        #Incluir input pedindo ID da nota
-        idNota = input("Informe o ID da nota: ")
-        page.goto("https:#EndereçoOndeaNFeVaiSerPrenchida" + idNota + "/editar", wait_until="domcontentloaded")
+        id_nota = input("Informe o ID da nota: ").strip()
+        if not id_nota.isdigit():
+            raise ValueError("O ID da nota deve conter apenas números.")
 
-        # 2. Login (Substitua os seletores pelos do seu sistema)
+        page.goto(
+            f"{BASE_URL}/movimentos/nf-e/saidas/{id_nota}/editar",
+            wait_until="domcontentloaded"
+        )
+
         page.locator('input[name="email"]').wait_for(state="visible")
-        page.click('input[name="email"]')
-        page.type('input[name="email"]', "#EmailDeLogin", delay=80)
+        page.fill('input[name="email"]', LOGIN_EMAIL)
         page.click('button[type="submit"]')
         page.locator('input[name="password"]').wait_for(state="visible")
-        page.click('input[name="password"]')
-        page.type('input[name="password"]', "#SenhaDeLogin", delay=80)
+        page.fill('input[name="password"]', LOGIN_PASSWORD)
         page.get_by_role("button", name="Entrar").click()
 
-        # Espera a página carregar após o login
         page.wait_for_load_state("networkidle")
 
-        # 3. Ir para a tela de entrada de nota(alterar esse url conforme o sistema do cliente)
-        # O código abaixo está dando um erro que ele fica fazendo retorno para tela de login.
-        #page.goto("https://app.gdoorweb.com.br/movimentos/nf-e/saidas/1769/editar", wait_until="domcontentloaded")
-
-        # 4. Preencher Cabeçalho (delay=50 simula digitação humana)
-        #page.type('#campo-numero-nota', dados_nota["numero_nota"], delay=50)
-        #page.type('#campo-cnpj', dados_nota["cnpj_emitente"], delay=50)
-
-        # 5. Preencher os Produtos e forncedor em Loop
         for prod in dados_nota["produtos"]:
             page.locator(
                 'button[mattooltip="Adicionar produto (Insert)"]'
@@ -143,8 +149,9 @@ def lancar_no_sistema(dados_nota):
             page.wait_for_timeout(500)
             if not quantidade.input_value():
                 raise RuntimeError(
-                    f"A quantidade não foi aplicada para o produto: {prod['nome']}"
+                    f"A quantidade não foi aplicada para: {prod['nome']}"
                 )
+
             tributos = page.get_by_role("button", name="Tributos", exact=True)
             tributos.wait_for(state="visible")
             tributos.click()
@@ -155,24 +162,24 @@ def lancar_no_sistema(dados_nota):
             cfop.blur()
 
             page.get_by_role("button", name="Confirmar", exact=True).click()
-            time.sleep(0.8) # Pequena pausa para o sistema processar
+            time.sleep(0.8)
 
-        print("Preenchimento concluído! Confira os dados na tela antes de salvar.")
-
-        # Mantém o navegador aberto por 5 minutos para você conferir e clicar em Salvar
+        print("Preenchimento concluído. Confira os dados antes de salvar.")
         time.sleep(300)
         browser.close()
 
+
 # --- EXECUTAR ---
-pasta_xml = Path(__file__).resolve().parent / "notasXMLs"
-arquivos_xml = sorted(pasta_xml.glob("*.xml"))
+if __name__ == "__main__":
+    pasta_xml = Path(__file__).resolve().parent / "notasXMLs"
+    arquivos_xml = sorted(pasta_xml.glob("*.xml"))
 
-if not arquivos_xml:
-    raise FileNotFoundError(
-        f"Nenhum arquivo XML encontrado na pasta: {pasta_xml}"
-    )
+    if not arquivos_xml:
+        raise FileNotFoundError(
+            f"Nenhum XML encontrado na pasta: {pasta_xml}"
+        )
 
-for arquivo_xml in arquivos_xml:
-    print(f"Lendo XML: {arquivo_xml.name}")
-    dados = ler_xml_nfe(arquivo_xml)
-    lancar_no_sistema(dados)
+    for arquivo_xml in arquivos_xml:
+        print(f"Lendo XML: {arquivo_xml.name}")
+        dados = ler_xml_nfe(arquivo_xml)
+        lancar_no_sistema(dados)
