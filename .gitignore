@@ -21,3 +21,7 @@ notasXMLs/*.xml
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Generated build artifacts
+build/
+dist/

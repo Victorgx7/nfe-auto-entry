@@ -33,6 +33,7 @@ playwright install chromium
 | Variável | Descrição |
 |---|---|
 | `GDOOR_BASE_URL` | Endereço base do sistema |
+| `GDOOR_PRODUCTS_URL` | Endereço da tela de cadastro de produtos |
 | `GDOOR_EMAIL` | Usuário de acesso |
 | `GDOOR_PASSWORD` | Senha de acesso |
 
@@ -44,10 +45,19 @@ Coloque os XMLs de teste na pasta `notasXMLs/`. Essa pasta é ignorada pelo Git 
 
 Use somente arquivos fictícios ou dados devidamente anonimizados em demonstrações.
 
+## Estrutura
+
+- `main.py`: ponto de entrada e menu da aplicação.
+- `src/nfe/`: leitura e interpretação dos arquivos XML.
+- `src/browser/`: autenticação e automação com Playwright.
+- `tests/`: testes automatizados do parser XML.
+- `notasXMLs/`: arquivos XML locais; não são enviados ao repositório.
+- `dist/` e `build/`: artefatos gerados pelo empacotamento.
+
 ## Execução
 
 ```bash
-python main2.py
+python main.py
 ```
 
 O programa solicita o identificador da nota e abre o navegador para realizar o preenchimento. Revise todas as informações no sistema antes de salvar.
