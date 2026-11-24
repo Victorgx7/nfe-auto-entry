@@ -454,6 +454,13 @@ class NFeAutoEntry:
             fg_color="transparent"
         )
 
+        self.status_importacao = ctk.CTkLabel(
+            self.conteudo,
+            text="",
+            wraplength=650
+        )
+        self.status_importacao.pack(pady=(5, 0))
+
         self.btn_iniciar = ctk.CTkButton(
             self.conteudo,
             text="Iniciar importação",
@@ -498,17 +505,69 @@ class NFeAutoEntry:
         if not arquivos_xml:
             return
 
+        importar_ibscbs = bool(self.checkbox_ibscbs.get())
+        self.status_importacao.configure(text="Importando nota...")
         self.btn_iniciar.configure(
             state="disabled",
-            text="Importando..."
+            text="Importando...",
+            command=self.iniciar_importacao
         )
+        self.btn_produtos.configure(state="disabled")
+        self.btn_notas.configure(state="disabled")
         threading.Thread(
             target=self.executar_importacao_nota,
-            args=(id_nota, arquivos_xml),
+            args=(id_nota, arquivos_xml, importar_ibscbs),
             daemon=True
         ).start()
 
-    def executar_importacao_nota(self, id_nota, arquivos_xml):
+    def aguardar_selecao_manual(self, produto):
+        evento = threading.Event()
+        self.evento_continuar_importacao = evento
+        mensagem = (
+            "Produto não encontrado automaticamente: "
+            f"{produto['codigo']} - {produto['nome']}. "
+            "Selecione-o manualmente na janela do Gdoor e clique "
+            "em continuar."
+        )
+        self.root.after(
+            0,
+            lambda: self.solicitar_selecao_manual(mensagem)
+        )
+        evento.wait()
+        self.evento_continuar_importacao = None
+
+    def solicitar_selecao_manual(self, mensagem):
+        self.status_importacao.configure(
+            text=mensagem,
+            text_color="#E74C3C"
+        )
+        self.btn_iniciar.configure(
+            state="normal",
+            text="Continuar",
+            command=self.continuar_importacao_manual
+        )
+
+    def continuar_importacao_manual(self):
+        evento = getattr(self, "evento_continuar_importacao", None)
+        if evento is None:
+            return
+        self.status_importacao.configure(
+            text="Seleção confirmada. Continuando a importação...",
+            text_color=("gray10", "#DCE4EE")
+        )
+        self.btn_iniciar.configure(
+            state="disabled",
+            text="Importando...",
+            command=self.iniciar_importacao
+        )
+        evento.set()
+
+    def executar_importacao_nota(
+        self,
+        id_nota,
+        arquivos_xml,
+        importar_ibscbs=False,
+    ):
         try:
             for arquivo in arquivos_xml:
                 dados_nota = ler_xml_nfe(arquivo)
@@ -516,27 +575,30 @@ class NFeAutoEntry:
                     lancar_no_sistema,
                     dados_nota,
                     id_nota=id_nota,
+                    aguardar_selecao_manual=self.aguardar_selecao_manual,
+                    importar_ibscbs=importar_ibscbs,
                 )
-            self.root.after(
-                0,
-                lambda: self.btn_iniciar.configure(
-                    state="normal",
-                    text="Iniciar importação"
-                )
-            )
+            mensagem = "Importação concluída. Confira os dados no Gdoor."
         except Exception as exc:
-            mensagem_erro = f"Erro na importação: {exc}"
+            mensagem = f"Erro na importação: {exc}"
+        finally:
             self.root.after(
                 0,
-                lambda: self.btn_iniciar.configure(
-                    state="normal",
-                    text="Iniciar importação"
-                )
+                lambda: self.finalizar_importacao(mensagem)
             )
-            self.root.after(
-                0,
-                lambda: print(mensagem_erro)
-            )
+
+    def finalizar_importacao(self, mensagem):
+        self.status_importacao.configure(
+            text=mensagem,
+            text_color=("gray10", "#DCE4EE")
+        )
+        self.btn_iniciar.configure(
+            state="normal",
+            text="Iniciar importação",
+            command=self.iniciar_importacao
+        )
+        self.btn_produtos.configure(state="normal")
+        self.btn_notas.configure(state="normal")
 
     def mostrar_aviso_sessao(self):
         print("Abra o Gdoor antes de iniciar uma operação.")

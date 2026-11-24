@@ -140,7 +140,13 @@ def abrir_consulta_produtos(page=None):
     return True
 
 
-def lancar_no_sistema(dados_nota, id_nota=None, page=None):
+def lancar_no_sistema(
+    dados_nota,
+    id_nota=None,
+    page=None,
+    aguardar_selecao_manual=None,
+    importar_ibscbs=False,
+):
     configuracao = carregar_configuracao()
 
     if not id_nota:
@@ -163,6 +169,7 @@ def lancar_no_sistema(dados_nota, id_nota=None, page=None):
                 has_text=produto["codigo"]
             ).first
 
+            selecao_automatica = True
             try:
                 opcao_produto.wait_for(state="visible", timeout=3000)
             except PlaywrightTimeout:
@@ -173,14 +180,17 @@ def lancar_no_sistema(dados_nota, id_nota=None, page=None):
                 ).first
                 try:
                     opcao_produto.wait_for(state="visible", timeout=5000)
-                except PlaywrightTimeout as exc:
-                    raise RuntimeError(
-                        "Produto nao encontrado automaticamente. "
-                        f"Codigo: {produto['codigo']} | "
-                        f"Nome: {produto['nome']}"
-                    ) from exc
+                except PlaywrightTimeout:
+                    if aguardar_selecao_manual is None:
+                        raise RuntimeError(
+                            "Produto nao encontrado automaticamente. "
+                            f"Codigo: {produto['codigo']} | "
+                            f"Nome: {produto['nome']}"
+                        )
+                    selecao_automatica = False
+                    aguardar_selecao_manual(produto)
 
-            if opcao_produto.is_visible():
+            if selecao_automatica and opcao_produto.is_visible():
                 opcao_produto.click()
             page.wait_for_timeout(1000)
 
@@ -218,6 +228,9 @@ def lancar_no_sistema(dados_nota, id_nota=None, page=None):
             cfop.wait_for(state="visible")
             cfop.fill(produto["codigo_fiscal"])
             cfop.blur()
+            if importar_ibscbs:
+                preencher_ibscbs(page, produto)
+
             page.get_by_role(
                 "button", name="Confirmar", exact=True
             ).click()
@@ -242,8 +255,139 @@ def lancar_no_sistema(dados_nota, id_nota=None, page=None):
             configuracao["email"],
             configuracao["password"]
         )
-        lancar_no_sistema(dados_nota, id_nota, nova_pagina)
+        lancar_no_sistema(
+            dados_nota,
+            id_nota,
+            nova_pagina,
+            importar_ibscbs=importar_ibscbs,
+        )
         browser.close()
+
+
+def preencher_ibscbs(page, produto):
+    abrir_secao_ibscbs(page)
+
+    impostos_ibscbs = produto.get("impostos", {}).get("IBSCBS", {})
+    dados_grupo = impostos_ibscbs.get("gIBSCBS", {})
+    ibs_uf = dados_grupo.get("gIBSUF", {})
+    ibs_municipio = dados_grupo.get("gIBSMun", {})
+    dados = {
+        "CST": impostos_ibscbs.get("CST", ""),
+        "Código de Classificação Tributária": impostos_ibscbs.get(
+            "cClassTrib", ""
+        ),
+        "Alíquota UF": ibs_uf.get("pIBSUF", ""),
+        "Alíquota Município": ibs_municipio.get("pIBSMun", ""),
+    }
+    ausentes = [nome for nome, valor in dados.items() if not valor]
+    if ausentes:
+        raise RuntimeError(
+            "Dados IBS/CBS ausentes no XML para "
+            f"{produto['nome']}: {', '.join(ausentes)}."
+        )
+
+    selecionar_opcao_tributo(page, "CST", dados["CST"], usar_ultimo=True)
+    selecionar_opcao_tributo(
+        page,
+        "Código de Classificação Tributária",
+        dados["Código de Classificação Tributária"],
+    )
+
+    grupos_aliquotas = (
+        (
+            "IBS UF",
+            'input[name="ibsCbs.ibs_uf_rate"]',
+            dados["Alíquota UF"],
+        ),
+        (
+            "IBS Município",
+            'input[name="ibsCbs.ibs_city_rate"]',
+            dados["Alíquota Município"],
+        ),
+    )
+    for nome_grupo, seletor, valor in grupos_aliquotas:
+        preencher_aliquota_ibscbs(
+            page,
+            nome_grupo,
+            seletor,
+            valor,
+            produto["nome"],
+        )
+
+
+def abrir_secao_ibscbs(page):
+    campo_cst = page.locator('mat-select[name="ibs_cbs_cst"]')
+    if campo_cst.is_visible():
+        return
+
+    grupos_controles = (
+        page.get_by_role("tab", name="IBS/CBS", exact=True),
+        page.get_by_role("button", name="IBS/CBS", exact=True),
+        page.get_by_text("IBS/CBS", exact=True),
+    )
+    selecionou_controle = False
+    for grupo in grupos_controles:
+        for indice in range(grupo.count()):
+            controle = grupo.nth(indice)
+            if not controle.is_visible():
+                continue
+            controle.click()
+            selecionou_controle = True
+            break
+        if selecionou_controle:
+            break
+
+    if not selecionou_controle:
+        raise RuntimeError(
+            "Não foi possível localizar o controle para abrir IBS/CBS."
+        )
+    try:
+        campo_cst.wait_for(state="visible", timeout=5000)
+    except PlaywrightTimeout as exc:
+        raise RuntimeError(
+            "A seção IBS/CBS foi selecionada, mas o campo CST não ficou "
+            "visível."
+        ) from exc
+
+
+def preencher_aliquota_ibscbs(page, nome_grupo, seletor, valor, nome_produto):
+    botao = page.get_by_role("button", name=nome_grupo, exact=True)
+    botao.wait_for(state="visible")
+    botao.click()
+
+    campo = page.locator(seletor)
+    campo.wait_for(state="visible", timeout=5000)
+    if not campo.is_enabled():
+        raise RuntimeError(
+            f"O campo IBS/CBS '{nome_grupo}' está desabilitado para "
+            f"o produto {nome_produto}."
+        )
+    valor_formatado = format(Decimal(str(valor)), "f").replace(".", ",")
+    campo.fill(valor_formatado)
+    campo.blur()
+    if not campo.input_value():
+        raise RuntimeError(
+            f"A alíquota de {nome_grupo} não foi preenchida para "
+            f"o produto {nome_produto}."
+        )
+
+
+def selecionar_opcao_tributo(page, nome_campo, valor, usar_ultimo=False):
+    if nome_campo == "CST":
+        campo = page.locator('mat-select[name="ibs_cbs_cst"]')
+    else:
+        padrao_campo = re.compile(rf"^\s*{re.escape(nome_campo)}\s*$")
+        campos = page.locator(".mat-select-placeholder:visible").filter(
+            has_text=padrao_campo
+        )
+        campo = campos.last if usar_ultimo else campos.first
+    campo.wait_for(state="visible")
+    campo.click()
+
+    padrao_opcao = re.compile(rf"^\s*{re.escape(valor)}(?:\s|$)")
+    opcao = page.get_by_role("option").filter(has_text=padrao_opcao).first
+    opcao.wait_for(state="visible")
+    opcao.click()
 
 
 def normalizar_texto(valor):
