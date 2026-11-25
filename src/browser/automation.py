@@ -3,10 +3,11 @@ import os
 import time
 import re
 import unicodedata
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
@@ -796,6 +797,131 @@ def consultar_produtos_no_sistema(
     return resultados
 
 
+def unidade_padrao_corresponde_opcao(texto_opcao):
+    partes = re.split(r"[-–]", texto_opcao, maxsplit=1)
+    return (
+        len(partes) == 2
+        and normalizar_texto(partes[0]) == "unid"
+        and normalizar_texto(partes[1]).startswith("unidade")
+    )
+
+
+def formatar_custo_xml(valor):
+    try:
+        custo = Decimal(str(valor).replace(",", "."))
+    except InvalidOperation as exc:
+        raise ValueError(f"Custo de compra inválido no XML: {valor!r}.") from exc
+    if not custo.is_finite():
+        raise ValueError(f"Custo de compra inválido no XML: {valor!r}.")
+    return format(custo, "f").replace(".", ",")
+
+
+def decimalizar_valor_campo(valor):
+    texto = re.sub(r"[^0-9,.-]", "", str(valor or ""))
+    if "," in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    try:
+        return Decimal(texto)
+    except InvalidOperation:
+        return None
+
+
+def preencher_campo_monetario(page, seletor, valor, descricao, codigo):
+    if not valor:
+        raise RuntimeError(
+            f"O XML não informa {descricao} do produto {codigo}."
+        )
+
+    valor_formatado = formatar_custo_xml(valor)
+    campo = page.locator(seletor)
+    campo.wait_for(state="visible", timeout=10000)
+    campo.scroll_into_view_if_needed()
+    campo.click()
+    campo.press("Control+A")
+    campo.type(valor_formatado, delay=60)
+    campo.blur()
+
+    valor_aplicado = decimalizar_valor_campo(campo.input_value())
+    valor_esperado = Decimal(str(valor).replace(",", "."))
+    if valor_aplicado != valor_esperado:
+        raise RuntimeError(
+            f"O GDOOR não aplicou {descricao} do produto {codigo}: "
+            f"XML={valor_formatado}, campo={campo.input_value()!r}."
+        )
+
+
+def selecionar_opcao_dropdown(page, seletor, corresponde, descricao):
+    campo = page.locator(seletor)
+    campo.wait_for(state="visible")
+    campo.click()
+
+    opcoes = page.get_by_role("option")
+    correspondentes = []
+    for indice in range(opcoes.count()):
+        opcao = opcoes.nth(indice)
+        if (
+            opcao.is_visible()
+            and corresponde(opcao.inner_text().strip())
+        ):
+            correspondentes.append(opcao)
+
+    if len(correspondentes) != 1:
+        page.keyboard.press("Escape")
+        raise RuntimeError(
+            f"Esperava uma opção para {descricao}, "
+            f"mas encontrei {len(correspondentes)}."
+        )
+
+    correspondentes[0].click()
+
+
+def preencher_campos_iniciais_produto(page, produto):
+    configuracao = carregar_configuracao()
+    url_produtos = urlsplit(configuracao["products_url"])
+    url_novo_produto = urlunsplit(
+        (
+            url_produtos.scheme,
+            url_produtos.netloc,
+            "/cadastros/produtos/novo",
+            "",
+            "",
+        )
+    )
+    page.goto(url_novo_produto, wait_until="domcontentloaded")
+
+    campo_nome = page.locator('input[name="name"]')
+    campo_nome.wait_for(state="visible")
+    campo_nome.fill(produto["nome"])
+
+    selecionar_opcao_dropdown(
+        page,
+        'mat-select[name="measure_unit"]',
+        unidade_padrao_corresponde_opcao,
+        "unidade padrão UNID - UNIDADE",
+    )
+
+    gtin = produto["ean"].strip()
+    if gtin and gtin.upper() != "SEM GTIN":
+        campo_gtin = page.locator(
+            'input[data-placeholder="GTIN, EAN, UPC, etc."]'
+        )
+        campo_gtin.wait_for(state="visible", timeout=10000)
+        campo_gtin.scroll_into_view_if_needed()
+        campo_gtin.fill(gtin)
+        campo_gtin.blur()
+        if campo_gtin.input_value() != gtin:
+            raise RuntimeError(
+                f"Não foi possível aplicar o GTIN do produto "
+                f"{produto['codigo']}."
+            )
+
+    preencher_campo_monetario(
+        page,
+        'input[data-placeholder="Custo de compra"]',
+        produto["valor_unitario"],
+        "o custo de compra",
+        produto["codigo"],
+    )
 def importar_produtos_no_sistema(caminho_arquivo, page=None, aguardar=False):
     configuracao = carregar_configuracao()
     produtos = ler_produtos_xml(caminho_arquivo)
@@ -810,30 +936,14 @@ def importar_produtos_no_sistema(caminho_arquivo, page=None, aguardar=False):
     )
 
     if page is not None:
-        page.goto(
-            configuracao["products_url"],
-            wait_until="domcontentloaded",
+        produto = produtos[0]
+        preencher_campos_iniciais_produto(page, produto)
+        print(
+            "Campos iniciais preenchidos para "
+            f"{produto['codigo']} - {produto['nome']}. "
+            "O cadastro ainda não foi salvo."
         )
-        for indice, produto in enumerate(produtos, start=1):
-            print(
-                f"\nProduto {indice}/{len(produtos)}:\n"
-                f"  Codigo: {produto['codigo']}\n"
-                f"  Nome: {produto['nome']}\n"
-                f"  GTIN: {produto['ean'] or '-'}\n"
-                f"  NCM: {produto['ncm'] or '-'}\n"
-                f"  Unidade: {produto['unidade'] or '-'}\n"
-                f"  Valor unitario: {produto['valor_unitario'] or '-'}"
-            )
-            encontrado = consultar_produto_na_lista(page, produto["codigo"])
-            if not encontrado:
-                encontrado = consultar_produto_na_lista(page, produto["nome"])
-            if encontrado:
-                print("Produto encontrado no sistema.")
-            else:
-                print("Produto nao encontrado: confira/cadastre manualmente.")
-            if aguardar:
-                input("Pressione Enter para continuar...")
-        return
+        return produto
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)

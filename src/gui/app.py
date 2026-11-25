@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
@@ -191,6 +192,18 @@ class NFeAutoEntry:
             fill="x",
             padx=10
         )
+        self.btn_importar_produtos = ctk.CTkButton(
+            self.opcoes,
+            text="Cadastrar produtos",
+            height=50,
+            command=self.iniciar_importacao_produtos
+        )
+        self.btn_importar_produtos.pack(
+            side="left",
+            expand=True,
+            fill="x",
+            padx=10
+        )
 
         self.btn_notas = ctk.CTkButton(
             self.opcoes,
@@ -216,6 +229,77 @@ class NFeAutoEntry:
         )
 
         self.selecionar_produtos()
+
+    def iniciar_importacao_produtos(self):
+        if not self.sessao_gdoor or not self.sessao_gdoor.page:
+            self.mostrar_aviso_sessao()
+            return
+
+        caminho_arquivo = filedialog.askopenfilename(
+            parent=self.root,
+            title="Selecione o XML dos produtos",
+            filetypes=[("Arquivos XML", "*.xml"), ("Todos os arquivos", "*.*")]
+        )
+        if not caminho_arquivo:
+            return
+
+        self.btn_importar_produtos.configure(
+            state="disabled",
+            text="Processando XML..."
+        )
+        self.btn_produtos.configure(state="disabled")
+        self.btn_notas.configure(state="disabled")
+        threading.Thread(
+            target=self.executar_importacao_produtos,
+            args=(Path(caminho_arquivo),),
+            daemon=True
+        ).start()
+
+    def executar_importacao_produtos(self, caminho_arquivo):
+        try:
+            produto = self.sessao_gdoor.executar(
+                importar_produtos_no_sistema,
+                caminho_arquivo,
+                aguardar=False
+            )
+            if produto is None:
+                mensagem = "O XML não contém produtos para cadastrar."
+            else:
+                gtin_status = (
+                    "GTIN preenchido"
+                    if produto["ean"]
+                    and produto["ean"].upper() != "SEM GTIN"
+                    else "GTIN não informado no XML"
+                )
+                mensagem = (
+                    f"Preenchidos nome, unidade UNID, {gtin_status} "
+                    f"e custo de compra para "
+                    f"{produto['codigo']} - {produto['nome']}. "
+                    "O cadastro ainda não foi salvo."
+                )
+            erro = False
+        except Exception as exc:
+            mensagem = f"Erro ao processar o XML: {exc}"
+            erro = True
+
+        self.root.after(
+            0,
+            lambda texto=mensagem, falhou=erro: (
+                self.finalizar_importacao_produtos(texto, falhou)
+            )
+        )
+
+    def finalizar_importacao_produtos(self, mensagem, erro):
+        self.btn_importar_produtos.configure(
+            state="normal",
+            text="Cadastrar produtos"
+        )
+        self.btn_produtos.configure(state="normal")
+        self.btn_notas.configure(state="normal")
+        if erro:
+            messagebox.showerror("Falha no processamento", mensagem)
+        else:
+            messagebox.showinfo("Processamento concluído", mensagem)
 
     def selecionar_produtos(self):
 

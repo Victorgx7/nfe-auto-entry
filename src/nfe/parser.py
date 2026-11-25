@@ -59,11 +59,14 @@ def ler_produtos_xml(caminho_arquivo):
         if not codigo or codigo in codigos_vistos:
             continue
         codigos_vistos.add(codigo)
+        ean = obter_texto(prod, "cEAN")
+        if ean.upper() in ("", "SEM GTIN"):
+            ean = obter_texto(prod, "cEANTrib")
         produtos.append(
             {
                 "codigo": codigo,
                 "nome": obter_texto(prod, "xProd"),
-                "ean": obter_texto(prod, "cEAN"),
+                "ean": ean,
                 "ncm": obter_texto(prod, "NCM"),
                 "unidade": obter_texto(prod, "uCom"),
                 "valor_unitario": obter_texto(prod, "vUnCom"),
@@ -174,6 +177,7 @@ def extrair_impostos(imposto):
 
     return {
         "ICMS": {
+            "orig": obter_texto(icms, "orig"),
             "CST": obter_texto(icms, "CST"),
             "vBC": obter_texto(icms, "vBC"),
             "pICMS": obter_texto(icms, "pICMS"),
