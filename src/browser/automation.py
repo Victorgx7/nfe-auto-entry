@@ -19,10 +19,28 @@ load_dotenv()
 
 
 def carregar_configuracao():
+    base_url = os.getenv(
+        "GDOOR_BASE_URL",
+        "https://app.gdoorweb.com.br",
+    )
+    partes_base_url = urlsplit(base_url.strip())
+    if (
+        partes_base_url.scheme not in ("http", "https")
+        or not partes_base_url.netloc
+    ):
+        raise RuntimeError(
+            "GDOOR_BASE_URL deve conter uma URL HTTP/HTTPS válida."
+        )
+
     configuracao = {
-        "base_url": os.getenv(
-            "GDOOR_BASE_URL",
-            "https://app.gdoorweb.com.br/movimentos/compras/1735",
+        "base_url": urlunsplit(
+            (
+                partes_base_url.scheme,
+                partes_base_url.netloc,
+                "",
+                "",
+                "",
+            )
         ),
         "email": os.getenv("GDOOR_EMAIL"),
         "password": os.getenv("GDOOR_PASSWORD"),
@@ -38,6 +56,14 @@ def carregar_configuracao():
     return configuracao
 
 
+def verificar_redirecionamento_atualizacao(page):
+    if "/atualizacao-banco-de-dados" in urlsplit(page.url).path.lower():
+        raise RuntimeError(
+            "O Gdoor redirecionou para a atualização do banco de dados. "
+            "Conclua a atualização no sistema e tente novamente."
+        )
+
+
 def fazer_login(page, email, password):
     page.locator('input[name="email"]').wait_for(state="visible")
     page.click('input[name="email"]')
@@ -48,6 +74,7 @@ def fazer_login(page, email, password):
     page.type('input[name="password"]', password, delay=80)
     page.get_by_role("button", name="Entrar").click()
     page.wait_for_load_state("networkidle")
+    verificar_redirecionamento_atualizacao(page)
 
 
 class GDoorSession:
@@ -75,8 +102,8 @@ class GDoorSession:
         return self.page
 
     def _executar_sessao(self):
-        configuracao = carregar_configuracao()
         try:
+            configuracao = carregar_configuracao()
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.chromium.launch(headless=False)
             self.page = self.browser.new_page()
@@ -84,6 +111,7 @@ class GDoorSession:
                 configuracao["products_url"],
                 wait_until="domcontentloaded",
             )
+            verificar_redirecionamento_atualizacao(self.page)
             fazer_login(
                 self.page,
                 self.email,
@@ -159,6 +187,7 @@ def lancar_no_sistema(
             f"{id_nota}/editar",
             wait_until="domcontentloaded",
         )
+        verificar_redirecionamento_atualizacao(page)
 
         for produto in dados_nota["produtos"]:
             page.locator(
@@ -251,6 +280,7 @@ def lancar_no_sistema(
             f"{id_nota}/editar",
             wait_until="domcontentloaded",
         )
+        verificar_redirecionamento_atualizacao(nova_pagina)
         fazer_login(
             nova_pagina,
             configuracao["email"],
@@ -806,6 +836,18 @@ def unidade_padrao_corresponde_opcao(texto_opcao):
     )
 
 
+def codigo_origem_corresponde_opcao(texto_opcao, codigo_origem):
+    partes = re.split(r"[-–]", texto_opcao, maxsplit=1)
+    return (
+        len(partes) == 2
+        and partes[0].strip() == str(codigo_origem).strip()
+    )
+
+
+def normalizar_codigo_ncm(valor):
+    return re.sub(r"\D", "", str(valor or ""))
+
+
 def formatar_custo_xml(valor):
     try:
         custo = Decimal(str(valor).replace(",", "."))
@@ -922,6 +964,41 @@ def preencher_campos_iniciais_produto(page, produto):
         "o custo de compra",
         produto["codigo"],
     )
+
+    codigo_origem = produto["impostos"]["ICMS"]["orig"]
+    selecionar_opcao_dropdown(
+        page,
+        'mat-select[placeholder="Origem"]',
+        lambda texto: codigo_origem_corresponde_opcao(
+            texto,
+            codigo_origem,
+        ),
+        f"origem ICMS {codigo_origem}",
+    )
+    ncm = produto["ncm"].strip()
+    if ncm:
+        campo_ncm = page.locator('input[name="detail.0.ncm_code"]')
+        campo_ncm.wait_for(state="visible", timeout=10000)
+        campo_ncm.fill(ncm)
+        campo_ncm.blur()
+        ncm_esperado = normalizar_codigo_ncm(ncm)
+        ncm_aplicado = normalizar_codigo_ncm(campo_ncm.input_value())
+        if not ncm_esperado or ncm_aplicado != ncm_esperado:
+            raise RuntimeError(
+                f"Não foi possível aplicar o NCM do produto "
+                f"{produto['codigo']}."
+            )
+
+    botao = page.get_by_role(
+        "button",
+        name=re.compile(r"^\s*salvar\s*$", re.IGNORECASE),
+    )
+    botao.wait_for(state="visible", timeout=10000)
+
+    if not botao.is_enabled():
+        raise RuntimeError("Houve algum erro no cadastro, revise.")
+    botao.click()
+
 def importar_produtos_no_sistema(caminho_arquivo, page=None, aguardar=False):
     configuracao = carregar_configuracao()
     produtos = ler_produtos_xml(caminho_arquivo)
@@ -936,14 +1013,13 @@ def importar_produtos_no_sistema(caminho_arquivo, page=None, aguardar=False):
     )
 
     if page is not None:
-        produto = produtos[0]
-        preencher_campos_iniciais_produto(page, produto)
-        print(
-            "Campos iniciais preenchidos para "
-            f"{produto['codigo']} - {produto['nome']}. "
-            "O cadastro ainda não foi salvo."
-        )
-        return produto
+        for indice, produto in enumerate(produtos, start=1):
+            print(
+                f"Iniciando produto {indice}/{len(produtos)}: "
+                f"{produto['codigo']} - {produto['nome']}"
+            )
+            preencher_campos_iniciais_produto(page, produto)
+        return produtos
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)

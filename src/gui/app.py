@@ -181,7 +181,7 @@ class NFeAutoEntry:
 
         self.btn_produtos = ctk.CTkButton(
             self.opcoes,
-            text="Importar produtos",
+            text="Consultar produtos",
             height=50,
             command=self.selecionar_produtos
         )
@@ -257,25 +257,17 @@ class NFeAutoEntry:
 
     def executar_importacao_produtos(self, caminho_arquivo):
         try:
-            produto = self.sessao_gdoor.executar(
+            produtos = self.sessao_gdoor.executar(
                 importar_produtos_no_sistema,
                 caminho_arquivo,
                 aguardar=False
             )
-            if produto is None:
+            if not produtos:
                 mensagem = "O XML não contém produtos para cadastrar."
             else:
-                gtin_status = (
-                    "GTIN preenchido"
-                    if produto["ean"]
-                    and produto["ean"].upper() != "SEM GTIN"
-                    else "GTIN não informado no XML"
-                )
                 mensagem = (
-                    f"Preenchidos nome, unidade UNID, {gtin_status} "
-                    f"e custo de compra para "
-                    f"{produto['codigo']} - {produto['nome']}. "
-                    "O cadastro ainda não foi salvo."
+                    f"{len(produtos)} produto(s) processado(s). "
+                    "Confira os cadastros no Gdoor."
                 )
             erro = False
         except Exception as exc:
@@ -307,7 +299,7 @@ class NFeAutoEntry:
 
         titulo = ctk.CTkLabel(
             self.conteudo,
-            text="Importação de produtos",
+            text="Consulte produtos do sistema",
             font=("Arial", 20, "bold")
         )
 
@@ -315,7 +307,7 @@ class NFeAutoEntry:
 
         descricao = ctk.CTkLabel(
             self.conteudo,
-            text="Consulte os produtos dos XMLs da pasta notasXMLs."
+            text="Insira seu XML e consulte os produtos já existente no seu sistema.",
         )
 
         descricao.pack(pady=10)
