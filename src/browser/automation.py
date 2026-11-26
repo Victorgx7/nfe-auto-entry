@@ -3,7 +3,7 @@ import os
 import time
 import re
 import unicodedata
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
@@ -564,7 +564,6 @@ def item_produto_existe(item):
 def confirmar_produto_por_clique(page, linha):
     try:
         linha.hover(timeout=1000)
-        page.wait_for_timeout(300)
     except Exception:
         return False
 
@@ -582,11 +581,17 @@ def confirmar_produto_por_clique(page, linha):
             continue
         try:
             gatilho.click(timeout=1500)
-            page.wait_for_timeout(500)
+            menu = page.locator(
+                "[role='menu'].mat-menu-panel:visible, "
+                "[role='menu']:visible"
+            )
+            menu.wait_for(state="visible", timeout=1000)
             if menu_de_produto_existente(page):
                 page.keyboard.press("Escape")
-                page.wait_for_timeout(300)
                 return True
+            page.keyboard.press("Escape")
+        except PlaywrightTimeout:
+            continue
         except Exception:
             continue
 
@@ -635,7 +640,7 @@ def encontrar_campo_busca(page):
     return None
 
 
-def consultar_produto_na_lista(page, termo):
+def consultar_produto_na_lista(page, termo, timeout_segundos=8):
     if not termo:
         print("[CONSULTA] Termo vazio.")
         return False
@@ -680,14 +685,12 @@ def consultar_produto_na_lista(page, termo):
     
     if botao_pesquisa is not None:
         botao_pesquisa.click()
-        print("[CONSULTA] Clique no botao de pesquisa.")
     else:
         campo_busca.press("Enter")
         campo_busca.blur()
-        print("[CONSULTA] Pesquisa acionada pelo Enter.")
-    
-    for _ in range(16):
-        page.wait_for_timeout(500)
+
+    prazo = time.monotonic() + timeout_segundos
+    while time.monotonic() < prazo:
 
         for seletor in (
             "mat-list-item",
@@ -695,21 +698,10 @@ def consultar_produto_na_lista(page, termo):
             "mat-row",
             "[role='row']",
         ):
-            linhas = page.locator(seletor)
-            print(
-                f"[CONSULTA] Seletor={seletor} "
-                f"linhas_visiveis={linhas.count()}"
-            )
+            linhas = page.locator(f"{seletor}:visible")
             for indice in range(linhas.count()):
                 linha = linhas.nth(indice)
-                if not linha.is_visible():
-                    continue
-
                 texto = normalizar_texto(linha.inner_text())
-                print(
-                    f"[CONSULTA] Linha {indice}: "
-                    f"{texto[:180]!r}"
-                )
                 if (
                     seletor == "mat-list-item"
                     and texto_da_linha_corresponde(
@@ -718,20 +710,14 @@ def consultar_produto_na_lista(page, termo):
                     )
                     and item_produto_existe(linha)
                 ):
-                    print(
-                        "[CONSULTA] TRUE: mat-list-item correspondente "
-                        "com marcador duplicar/editar/dup."
-                    )
                     return True
 
                 if texto_da_linha_corresponde(termo_normalizado, texto):
-                    print(
-                        "[CONSULTA] Texto corresponde, tentando confirmar "
-                        "pela abertura do menu desta linha."
-                    )
                     return confirmar_produto_por_clique(page, linha)
 
-    print(f"[CONSULTA] FALSE: nenhuma linha positiva para {termo!r}.")
+        page.wait_for_timeout(100)
+
+    print(f"[CONSULTA] Nenhuma linha correspondente para {termo!r}.")
     return False
 
 
@@ -739,90 +725,82 @@ def consultar_produtos_no_sistema(
     caminhos_arquivos,
     callback=None,
     page=None,
-    stop_event=None
+    stop_event=None,
+    progress_callback=None,
 ):
     configuracao = carregar_configuracao()
     resultados = []
+    itens = []
 
-    if page is not None:
-        for caminho in map(Path, caminhos_arquivos):
+    for caminho in map(Path, caminhos_arquivos):
+        itens.extend(
+            (caminho, produto)
+            for produto in ler_produtos_xml(caminho)
+        )
+
+    total = len(itens)
+    if progress_callback:
+        progress_callback(0, total, 0)
+
+    def consultar_na_pagina(pagina):
+        faltantes = 0
+        for caminho, produto in itens:
             if stop_event and stop_event.is_set():
                 break
-            produtos = ler_produtos_xml(caminho)
-            for produto in produtos:
-                if stop_event and stop_event.is_set():
-                    break
+
+            encontrado = consultar_produto_na_lista(
+                pagina,
+                produto["nome"],
+            )
+            criterio = f"Nome: {produto['nome']}"
+
+            if not encontrado:
                 encontrado = consultar_produto_na_lista(
-                    page,
-                    produto["codigo"]
+                    pagina,
+                    produto["codigo"],
+                    timeout_segundos=2,
                 )
                 criterio = f"Código: {produto['codigo']}"
 
-                if not encontrado:
-                    encontrado = consultar_produto_na_lista(
-                        page,
-                        produto["nome"]
-                    )
-                    criterio = f"Nome: {produto['nome']}"
+            if not encontrado:
+                faltantes += 1
 
-                resultado = {
-                    "arquivo": caminho.name,
-                    "codigo": produto["codigo"],
-                    "nome": produto["nome"],
-                    "existe": encontrado,
-                    "texto": (
-                        f"[{caminho.name}] "
-                        f"{'EXISTE' if encontrado else 'NÃO EXISTE'} - "
-                        f"{criterio}"
-                    )
-                }
-                resultados.append(resultado)
-                if callback:
-                    callback(resultado)
+            resultado = {
+                "arquivo": caminho.name,
+                "codigo": produto["codigo"],
+                "nome": produto["nome"],
+                "existe": encontrado,
+                "texto": (
+                    f"[{caminho.name}] "
+                    f"{'EXISTE' if encontrado else 'NÃO EXISTE'} - "
+                    f"{criterio}"
+                )
+            }
+            resultados.append(resultado)
+            if callback:
+                callback(resultado)
+            if progress_callback:
+                progress_callback(len(resultados), total, faltantes)
+
+    if page is not None:
+        consultar_na_pagina(page)
     else:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=False)
-            nova_pagina = browser.new_page()
-            nova_pagina.goto(
-                configuracao["products_url"],
-                wait_until="domcontentloaded",
-            )
-            fazer_login(
-                nova_pagina,
-                configuracao["email"],
-                configuracao["password"],
-            )
-            for caminho in map(Path, caminhos_arquivos):
-                produtos = ler_produtos_xml(caminho)
-                for produto in produtos:
-                    encontrado = consultar_produto_na_lista(
-                        nova_pagina,
-                        produto["codigo"]
-                    )
-                    criterio = f"Código: {produto['codigo']}"
-
-                    if not encontrado:
-                        encontrado = consultar_produto_na_lista(
-                            nova_pagina,
-                            produto["nome"]
-                        )
-                        criterio = f"Nome: {produto['nome']}"
-
-                    resultado = {
-                        "arquivo": caminho.name,
-                        "codigo": produto["codigo"],
-                        "nome": produto["nome"],
-                        "existe": encontrado,
-                        "texto": (
-                            f"[{caminho.name}] "
-                            f"{'EXISTE' if encontrado else 'NÃO EXISTE'} - "
-                            f"{criterio}"
-                        )
-                    }
-                    resultados.append(resultado)
-                    if callback:
-                        callback(resultado)
-            browser.close()
+            try:
+                nova_pagina = browser.new_page()
+                nova_pagina.goto(
+                    configuracao["products_url"],
+                    wait_until="domcontentloaded",
+                )
+                fazer_login(
+                    nova_pagina,
+                    configuracao["email"],
+                    configuracao["password"],
+                )
+                consultar_na_pagina(nova_pagina)
+            finally:
+                browser.close()
 
     return resultados
 
@@ -851,11 +829,15 @@ def normalizar_codigo_ncm(valor):
 def formatar_custo_xml(valor):
     try:
         custo = Decimal(str(valor).replace(",", "."))
+        if not custo.is_finite():
+            raise InvalidOperation
+        custo_centavos = custo.quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
     except InvalidOperation as exc:
         raise ValueError(f"Custo de compra inválido no XML: {valor!r}.") from exc
-    if not custo.is_finite():
-        raise ValueError(f"Custo de compra inválido no XML: {valor!r}.")
-    return format(custo, "f").replace(".", ",")
+    return format(custo_centavos, ".2f").replace(".", ",")
 
 
 def decimalizar_valor_campo(valor):
@@ -884,7 +866,7 @@ def preencher_campo_monetario(page, seletor, valor, descricao, codigo):
     campo.blur()
 
     valor_aplicado = decimalizar_valor_campo(campo.input_value())
-    valor_esperado = Decimal(str(valor).replace(",", "."))
+    valor_esperado = Decimal(valor_formatado.replace(",", "."))
     if valor_aplicado != valor_esperado:
         raise RuntimeError(
             f"O GDOOR não aplicou {descricao} do produto {codigo}: "
@@ -999,7 +981,13 @@ def preencher_campos_iniciais_produto(page, produto):
         raise RuntimeError("Houve algum erro no cadastro, revise.")
     botao.click()
 
-def importar_produtos_no_sistema(caminho_arquivo, page=None, aguardar=False):
+def importar_produtos_no_sistema(
+    caminho_arquivo,
+    page=None,
+    aguardar=False,
+    progress_callback=None,
+    stop_event=None,
+):
     configuracao = carregar_configuracao()
     produtos = ler_produtos_xml(caminho_arquivo)
     if not produtos:
@@ -1013,13 +1001,52 @@ def importar_produtos_no_sistema(caminho_arquivo, page=None, aguardar=False):
     )
 
     if page is not None:
+        if progress_callback:
+            progress_callback(0, len(produtos), None, "preparando")
+
+        produtos_enviados = []
         for indice, produto in enumerate(produtos, start=1):
+            if stop_event and stop_event.is_set():
+                if progress_callback:
+                    progress_callback(
+                        len(produtos_enviados),
+                        len(produtos),
+                        None,
+                        "interrompido",
+                    )
+                break
+
             print(
                 f"Iniciando produto {indice}/{len(produtos)}: "
                 f"{produto['codigo']} - {produto['nome']}"
             )
-            preencher_campos_iniciais_produto(page, produto)
-        return produtos
+            if progress_callback:
+                progress_callback(
+                    indice,
+                    len(produtos),
+                    produto,
+                    "processando",
+                )
+            try:
+                preencher_campos_iniciais_produto(page, produto)
+            except Exception:
+                if progress_callback:
+                    progress_callback(
+                        indice,
+                        len(produtos),
+                        produto,
+                        "erro",
+                    )
+                raise
+            if progress_callback:
+                progress_callback(
+                    indice,
+                    len(produtos),
+                    produto,
+                    "enviado",
+                )
+            produtos_enviados.append(produto)
+        return produtos_enviados
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)

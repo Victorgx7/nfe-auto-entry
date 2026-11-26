@@ -2,11 +2,14 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from threading import Event
+from unittest.mock import patch
 
 from src.browser.automation import (
     codigo_origem_corresponde_opcao,
     decimalizar_valor_campo,
     formatar_custo_xml,
+    importar_produtos_no_sistema,
     normalizar_codigo_ncm,
     unidade_padrao_corresponde_opcao,
 )
@@ -46,8 +49,12 @@ class ProductImportFieldTests(unittest.TestCase):
 
     def test_formats_xml_cost_for_gdoor(self):
         self.assertEqual(formatar_custo_xml("12.50"), "12,50")
-        self.assertEqual(formatar_custo_xml("100"), "100")
+        self.assertEqual(formatar_custo_xml("100"), "100,00")
         self.assertEqual(formatar_custo_xml("1,25"), "1,25")
+        self.assertEqual(
+            formatar_custo_xml("136.5598803700"),
+            "136,56",
+        )
 
     def test_reads_formatted_cost_values(self):
         self.assertEqual(decimalizar_valor_campo("12,50"), Decimal("12.50"))
@@ -91,6 +98,103 @@ class ProductImportFieldTests(unittest.TestCase):
 
         self.assertEqual(produto["ean"], "7891234567890")
         self.assertEqual(produto["impostos"]["ICMS"]["orig"], "0")
+
+    def test_reports_product_registration_progress(self):
+        products = [
+            {"codigo": "100", "nome": "Produto teste"},
+        ]
+        progress = []
+
+        with (
+            patch(
+                "src.browser.automation.carregar_configuracao",
+                return_value={},
+            ),
+            patch(
+                "src.browser.automation.ler_produtos_xml",
+                return_value=products,
+            ),
+            patch("src.browser.automation.preencher_campos_iniciais_produto"),
+        ):
+            result = importar_produtos_no_sistema(
+                Path("nota.xml"),
+                page=object(),
+                progress_callback=lambda *evento: progress.append(evento),
+            )
+
+        self.assertEqual(result, products)
+        self.assertEqual(
+            progress,
+            [
+                (0, 1, None, "preparando"),
+                (1, 1, products[0], "processando"),
+                (1, 1, products[0], "enviado"),
+            ],
+        )
+
+    def test_reports_product_registration_failure(self):
+        product = {"codigo": "100", "nome": "Produto teste"}
+        progress = []
+
+        with (
+            patch(
+                "src.browser.automation.carregar_configuracao",
+                return_value={},
+            ),
+            patch(
+                "src.browser.automation.ler_produtos_xml",
+                return_value=[product],
+            ),
+            patch(
+                "src.browser.automation.preencher_campos_iniciais_produto",
+                side_effect=RuntimeError("falha no cadastro"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "falha no cadastro"):
+                importar_produtos_no_sistema(
+                    Path("nota.xml"),
+                    page=object(),
+                    progress_callback=lambda *evento: progress.append(evento),
+                )
+
+        self.assertEqual(progress[-1], (1, 1, product, "erro"))
+
+    def test_stops_registration_between_products(self):
+        products = [
+            {"codigo": "100", "nome": "Produto 1"},
+            {"codigo": "200", "nome": "Produto 2"},
+        ]
+        progress = []
+        stop_event = Event()
+
+        def capture_progress(*evento):
+            progress.append(evento)
+            if evento[-1] == "enviado":
+                stop_event.set()
+
+        with (
+            patch(
+                "src.browser.automation.carregar_configuracao",
+                return_value={},
+            ),
+            patch(
+                "src.browser.automation.ler_produtos_xml",
+                return_value=products,
+            ),
+            patch(
+                "src.browser.automation.preencher_campos_iniciais_produto",
+            ) as preencher,
+        ):
+            result = importar_produtos_no_sistema(
+                Path("nota.xml"),
+                page=object(),
+                progress_callback=capture_progress,
+                stop_event=stop_event,
+            )
+
+        self.assertEqual(result, products[:1])
+        preencher.assert_called_once()
+        self.assertEqual(progress[-1], (1, 2, None, "interrompido"))
 
 
 if __name__ == "__main__":

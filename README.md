@@ -42,14 +42,14 @@ O arquivo `.env` é ignorado pelo Git e não deve ser enviado ao repositório.
 
 ## Arquivos XML
 
-Para importar uma nota, coloque os XMLs na pasta `notasXMLs/`. Essa pasta é ignorada pelo Git para evitar a publicação de documentos fiscais. O cadastro de produtos abre uma janela para selecionar o XML.
+Na tela de consulta de produtos, use **Adicionar XML às Notas** para validar um XML de NF-e e copiá-lo para `notasXMLs/`; o original permanece no local escolhido. Uma cópia idêntica não é duplicada e arquivos diferentes com o mesmo nome recebem um sufixo. Essa pasta é ignorada pelo Git para evitar a publicação de documentos fiscais. O cadastro de produtos também permite selecionar um XML diretamente.
 
 Use somente arquivos fictícios ou dados devidamente anonimizados em demonstrações.
 
 ## Estrutura
 
 - `main.py`: ponto de entrada e menu da aplicação.
-- `src/nfe/`: leitura e interpretação dos arquivos XML.
+- `src/nfe/`: leitura, interpretação e armazenamento local dos XMLs.
 - `src/browser/`: autenticação e automação com Playwright.
 - `tests/`: testes automatizados do parser e da lógica de importação.
 - `notasXMLs/`: arquivos XML locais; não são enviados ao repositório.
@@ -63,6 +63,7 @@ python main.py
 
 Depois de abrir o Gdoor:
 
+- **Consultar produtos no sistema**: consulta os itens dos XMLs em `notasXMLs/` e mostra o progresso, a quantidade consultada e quantos não foram encontrados.
 - **Cadastrar produtos**: selecione um XML. A aplicação processa os produtos do arquivo, preenche os campos de cadastro e aciona Salvar. Não há verificação automática de duplicidade; confira os produtos e os resultados no Gdoor.
 - **Importar nota**: informe o identificador da nota. A aplicação lê os XMLs de `notasXMLs/` e preenche a nota no sistema. Revise as informações e salve manualmente no Gdoor.
 
