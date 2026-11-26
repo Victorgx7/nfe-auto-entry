@@ -169,6 +169,39 @@ def abrir_consulta_produtos(page=None):
     return True
 
 
+def buscar_produto_por_codigo_ou_gtin(page, produto):
+    gtin = str(produto.get("ean") or "").strip()
+    codigo = str(produto.get("codigo") or "").strip()
+    termo = gtin if gtin and gtin.upper() != "SEM GTIN" else codigo
+    if not termo:
+        return False
+
+    campo_codigo_gtin = page.locator(
+        'input[data-placeholder="Código/GTIN"]'
+    )
+    try:
+        campo_codigo_gtin.wait_for(state="visible", timeout=2000)
+    except PlaywrightTimeout:
+        return False
+
+    campo_codigo_gtin.fill(termo)
+    campo_codigo_gtin.press("Enter")
+    return True
+
+
+def aguardar_confirmacao_salvamento(page, produto):
+    confirmacao = page.locator(".cdk-overlay-container").get_by_text(
+        re.compile(r"salvo com sucesso", re.IGNORECASE)
+    )
+    try:
+        confirmacao.wait_for(state="visible", timeout=10000)
+    except PlaywrightTimeout as exc:
+        raise RuntimeError(
+            "O GDOOR não confirmou o salvamento do produto "
+            f"{produto['codigo']} - {produto['nome']}."
+        ) from exc
+
+
 def lancar_no_sistema(
     dados_nota,
     id_nota=None,
@@ -200,27 +233,40 @@ def lancar_no_sistema(
             ).first
 
             selecao_automatica = True
+            selecao_por_gtin = False
             try:
                 opcao_produto.wait_for(state="visible", timeout=3000)
             except PlaywrightTimeout:
-                produto_input.press("Control+A")
-                produto_input.fill(produto["nome"])
-                opcao_produto = page.get_by_role("option").filter(
-                    has_text=produto["nome"]
-                ).first
-                try:
-                    opcao_produto.wait_for(state="visible", timeout=5000)
-                except PlaywrightTimeout:
-                    if aguardar_selecao_manual is None:
-                        raise RuntimeError(
-                            "Produto nao encontrado automaticamente. "
-                            f"Codigo: {produto['codigo']} | "
-                            f"Nome: {produto['nome']}"
+                selecao_por_gtin = buscar_produto_por_codigo_ou_gtin(
+                    page,
+                    produto,
+                )
+                if not selecao_por_gtin:
+                    produto_input.press("Control+A")
+                    produto_input.fill(produto["nome"])
+                    opcao_produto = page.get_by_role("option").filter(
+                        has_text=produto["nome"]
+                    ).first
+                    try:
+                        opcao_produto.wait_for(
+                            state="visible",
+                            timeout=5000,
                         )
-                    selecao_automatica = False
-                    aguardar_selecao_manual(produto)
+                    except PlaywrightTimeout:
+                        if aguardar_selecao_manual is None:
+                            raise RuntimeError(
+                                "Produto nao encontrado automaticamente. "
+                                f"Codigo: {produto['codigo']} | "
+                                f"Nome: {produto['nome']}"
+                            )
+                        selecao_automatica = False
+                        aguardar_selecao_manual(produto)
 
-            if selecao_automatica and opcao_produto.is_visible():
+            if (
+                selecao_automatica
+                and not selecao_por_gtin
+                and opcao_produto.is_visible()
+            ):
                 opcao_produto.click()
             page.wait_for_timeout(1000)
 
@@ -899,20 +945,7 @@ def selecionar_opcao_dropdown(page, seletor, corresponde, descricao):
     correspondentes[0].click()
 
 
-def preencher_campos_iniciais_produto(page, produto):
-    configuracao = carregar_configuracao()
-    url_produtos = urlsplit(configuracao["products_url"])
-    url_novo_produto = urlunsplit(
-        (
-            url_produtos.scheme,
-            url_produtos.netloc,
-            "/cadastros/produtos/novo",
-            "",
-            "",
-        )
-    )
-    page.goto(url_novo_produto, wait_until="domcontentloaded")
-
+def preencher_dados_produto(page, produto):
     campo_nome = page.locator('input[name="name"]')
     campo_nome.wait_for(state="visible")
     campo_nome.fill(produto["nome"])
@@ -971,6 +1004,8 @@ def preencher_campos_iniciais_produto(page, produto):
                 f"{produto['codigo']}."
             )
 
+
+def salvar_produto(page, produto):
     botao = page.get_by_role(
         "button",
         name=re.compile(r"^\s*salvar\s*$", re.IGNORECASE),
@@ -980,6 +1015,39 @@ def preencher_campos_iniciais_produto(page, produto):
     if not botao.is_enabled():
         raise RuntimeError("Houve algum erro no cadastro, revise.")
     botao.click()
+    aguardar_confirmacao_salvamento(page, produto)
+
+
+def preencher_campos_iniciais_produto(
+    page,
+    produto,
+    aguardar_correcao_manual=None,
+):
+    configuracao = carregar_configuracao()
+    url_produtos = urlsplit(configuracao["products_url"])
+    url_novo_produto = urlunsplit(
+        (
+            url_produtos.scheme,
+            url_produtos.netloc,
+            "/cadastros/produtos/novo",
+            "",
+            "",
+        )
+    )
+    page.goto(url_novo_produto, wait_until="domcontentloaded")
+
+    try:
+        preencher_dados_produto(page, produto)
+    except Exception as exc:
+        if aguardar_correcao_manual is None:
+            raise
+        if aguardar_correcao_manual(produto, exc) is False:
+            raise InterruptedError(
+                "Cadastro interrompido durante a correção manual."
+            ) from exc
+
+    salvar_produto(page, produto)
+
 
 def importar_produtos_no_sistema(
     caminho_arquivo,
@@ -987,6 +1055,7 @@ def importar_produtos_no_sistema(
     aguardar=False,
     progress_callback=None,
     stop_event=None,
+    aguardar_correcao_manual=None,
 ):
     configuracao = carregar_configuracao()
     produtos = ler_produtos_xml(caminho_arquivo)
@@ -1028,7 +1097,20 @@ def importar_produtos_no_sistema(
                     "processando",
                 )
             try:
-                preencher_campos_iniciais_produto(page, produto)
+                preencher_campos_iniciais_produto(
+                    page,
+                    produto,
+                    aguardar_correcao_manual=aguardar_correcao_manual,
+                )
+            except InterruptedError:
+                if progress_callback:
+                    progress_callback(
+                        len(produtos_enviados),
+                        len(produtos),
+                        None,
+                        "interrompido",
+                    )
+                break
             except Exception:
                 if progress_callback:
                     progress_callback(

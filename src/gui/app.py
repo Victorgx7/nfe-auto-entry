@@ -39,6 +39,7 @@ class NFeAutoEntry:
         self.sessao_gdoor = None
         self.consulta_cancelada = threading.Event()
         self.importacao_cancelada = threading.Event()
+        self.evento_continuar_cadastro = None
 
         self.root.title("NFe Auto Entry")
         self.root.geometry("900x600")
@@ -380,6 +381,8 @@ class NFeAutoEntry:
 
     def parar_importacao_produtos(self):
         self.importacao_cancelada.set()
+        if self.evento_continuar_cadastro is not None:
+            self.evento_continuar_cadastro.set()
         self.btn_parar_cadastro.configure(
             state="disabled",
             text="Parando após o produto atual...",
@@ -413,6 +416,7 @@ class NFeAutoEntry:
                 aguardar=False,
                 progress_callback=informar_progresso,
                 stop_event=self.importacao_cancelada,
+                aguardar_correcao_manual=self.aguardar_correcao_cadastro,
             )
             produtos = produtos or []
             if (
@@ -442,6 +446,48 @@ class NFeAutoEntry:
             )
         )
 
+    def aguardar_correcao_cadastro(self, produto, erro):
+        evento = threading.Event()
+        self.evento_continuar_cadastro = evento
+        self.root.after(
+            0,
+            lambda p=produto, e=str(erro): (
+                self.solicitar_correcao_cadastro(p, e)
+            ),
+        )
+        evento.wait()
+        self.evento_continuar_cadastro = None
+        return not self.importacao_cancelada.is_set()
+
+    def solicitar_correcao_cadastro(self, produto, erro):
+        mensagem = (
+            f"Cadastro pausado em {produto['codigo']} - {produto['nome']}. "
+            f"Corrija os campos no GDOOR e clique em Continuar; o programa "
+            f"salvará o produto. Erro: {erro}"
+        )
+        self.status_cadastro.configure(text=mensagem)
+        self.lista_cadastro.insert("end", f"{mensagem}\n")
+        self.lista_cadastro.see("end")
+        self.btn_iniciar_cadastro.configure(
+            state="normal",
+            text="Continuar",
+            command=self.continuar_cadastro_produto,
+        )
+
+    def continuar_cadastro_produto(self):
+        evento = self.evento_continuar_cadastro
+        if evento is None:
+            return
+        self.btn_iniciar_cadastro.configure(
+            state="disabled",
+            text="Continuando...",
+            command=self.iniciar_importacao_produtos,
+        )
+        self.status_cadastro.configure(
+            text="Correção concluída. Salvando o produto..."
+        )
+        evento.set()
+
     def finalizar_importacao_produtos(self, mensagem, erro):
         self.btn_importar_produtos.configure(
             state="normal",
@@ -454,7 +500,9 @@ class NFeAutoEntry:
                 if self.caminho_xml_cadastro
                 and self.caminho_xml_cadastro.is_file()
                 else "disabled"
-            )
+            ),
+            text="Iniciar cadastro",
+            command=self.iniciar_importacao_produtos,
         )
         self.btn_produtos.configure(state="normal")
         self.btn_notas.configure(state="normal")
