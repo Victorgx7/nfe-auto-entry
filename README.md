@@ -7,6 +7,7 @@ Automação em Python para ler arquivos XML de NF-e e auxiliar no preenchimento 
 ## Tecnologias
 
 - Python
+- CustomTkinter
 - Playwright
 - xmltodict
 - python-dotenv
@@ -32,7 +33,7 @@ playwright install chromium
 
 | Variável | Descrição |
 |---|---|
-| `GDOOR_BASE_URL` | Endereço base do sistema |
+| `GDOOR_BASE_URL` | Origem do sistema, por exemplo `https://app.gdoorweb.com.br` |
 | `GDOOR_PRODUCTS_URL` | Endereço da tela de cadastro de produtos |
 | `GDOOR_EMAIL` | Usuário de acesso |
 | `GDOOR_PASSWORD` | Senha de acesso |
@@ -41,7 +42,7 @@ O arquivo `.env` é ignorado pelo Git e não deve ser enviado ao repositório.
 
 ## Arquivos XML
 
-Coloque os XMLs de teste na pasta `notasXMLs/`. Essa pasta é ignorada pelo Git para evitar a publicação de documentos fiscais.
+Para importar uma nota, coloque os XMLs na pasta `notasXMLs/`. Essa pasta é ignorada pelo Git para evitar a publicação de documentos fiscais. O cadastro de produtos abre uma janela para selecionar o XML.
 
 Use somente arquivos fictícios ou dados devidamente anonimizados em demonstrações.
 
@@ -50,7 +51,7 @@ Use somente arquivos fictícios ou dados devidamente anonimizados em demonstraç
 - `main.py`: ponto de entrada e menu da aplicação.
 - `src/nfe/`: leitura e interpretação dos arquivos XML.
 - `src/browser/`: autenticação e automação com Playwright.
-- `tests/`: testes automatizados do parser XML.
+- `tests/`: testes automatizados do parser e da lógica de importação.
 - `notasXMLs/`: arquivos XML locais; não são enviados ao repositório.
 - `dist/` e `build/`: artefatos gerados pelo empacotamento.
 
@@ -60,7 +61,18 @@ Use somente arquivos fictícios ou dados devidamente anonimizados em demonstraç
 python main.py
 ```
 
-O programa solicita o identificador da nota e abre o navegador para realizar o preenchimento. Revise todas as informações no sistema antes de salvar.
+Depois de abrir o Gdoor:
+
+- **Cadastrar produtos**: selecione um XML. A aplicação processa os produtos do arquivo, preenche os campos de cadastro e aciona Salvar. Não há verificação automática de duplicidade; confira os produtos e os resultados no Gdoor.
+- **Importar nota**: informe o identificador da nota. A aplicação lê os XMLs de `notasXMLs/` e preenche a nota no sistema. Revise as informações e salve manualmente no Gdoor.
+
+## Testes
+
+Execute os testes automatizados com:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Segurança
 
