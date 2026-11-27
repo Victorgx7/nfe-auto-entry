@@ -1,5 +1,4 @@
 """Ponto de entrada da interface gráfica."""
-import os
 import sys
 import threading
 from pathlib import Path
@@ -70,16 +69,12 @@ class NFeAutoEntry:
             font=("Arial", 24, "bold")
         ).pack(pady=(25, 20), padx=40)
 
-        configuracao_email = os.getenv("GDOOR_EMAIL", "")
-        configuracao_senha = os.getenv("GDOOR_PASSWORD", "")
-
         self.campo_email_login = ctk.CTkEntry(
             frame_login,
             width=320,
             height=40,
             placeholder_text="Email"
         )
-        self.campo_email_login.insert(0, configuracao_email)
         self.campo_email_login.pack(pady=8)
 
         self.campo_senha_login = ctk.CTkEntry(
@@ -89,7 +84,6 @@ class NFeAutoEntry:
             placeholder_text="Senha",
             show="*"
         )
-        self.campo_senha_login.insert(0, configuracao_senha)
         self.campo_senha_login.pack(pady=8)
 
         self.mensagem_login = ctk.CTkLabel(
@@ -394,10 +388,20 @@ class NFeAutoEntry:
     def executar_importacao_produtos(self, caminho_arquivo):
         try:
             self.total_cadastro = 0
+            self.total_produtos_xml = 0
+            self.produtos_existentes = 0
+            self.consulta_cadastro_interrompida = False
 
             def informar_progresso(indice, total, produto, estado):
-                if estado == "preparando":
+                if estado == "consultando":
+                    self.total_produtos_xml = total
+                    self.produtos_existentes = 0
+                elif estado == "existente":
+                    self.produtos_existentes += 1
+                elif estado == "preparando":
                     self.total_cadastro = total
+                elif estado == "consulta_interrompida":
+                    self.consulta_cadastro_interrompida = True
                 self.root.after(
                     0,
                     lambda i=indice, t=total, p=produto, s=estado: (
@@ -419,20 +423,33 @@ class NFeAutoEntry:
                 aguardar_correcao_manual=self.aguardar_correcao_cadastro,
             )
             produtos = produtos or []
-            if (
+            if self.consulta_cadastro_interrompida:
+                mensagem = (
+                    "Consulta interrompida antes do cadastro. "
+                    f"{self.produtos_existentes} produto(s) já existente(s); "
+                    "nenhum produto novo foi enviado."
+                )
+            elif (
                 self.importacao_cancelada.is_set()
                 and len(produtos) < self.total_cadastro
             ):
                 mensagem = (
                     f"Cadastro interrompido: {len(produtos)}/"
-                    f"{self.total_cadastro} produto(s) enviado(s) ao GDOOR."
+                    f"{self.total_cadastro} produto(s) novo(s) enviado(s) "
+                    f"ao GDOOR; {self.produtos_existentes} já existente(s)."
+                )
+            elif self.total_produtos_xml and not self.total_cadastro:
+                mensagem = (
+                    f"Todos os {self.total_produtos_xml} produto(s) do XML "
+                    "já estão cadastrados. Nenhum cadastro foi iniciado."
                 )
             elif not produtos:
                 mensagem = "O XML não contém produtos para cadastrar."
             else:
                 mensagem = (
-                    f"{len(produtos)} produto(s) enviado(s) ao GDOOR "
-                    "para salvar. Confira os cadastros no sistema."
+                    f"{len(produtos)} produto(s) novo(s) enviado(s) ao "
+                    f"GDOOR; {self.produtos_existentes} já existente(s). "
+                    "Confira os cadastros no sistema."
                 )
             erro = False
         except Exception as exc:
@@ -526,10 +543,44 @@ class NFeAutoEntry:
         estado,
     ):
         progresso = indice / total if total else 0
+        if estado == "consultando":
+            self.barra_progresso_cadastro.set(0)
+            self.status_cadastro.configure(
+                text=f"Consultando {total} produto(s) antes do cadastro..."
+            )
+            return
+        if estado in ("existente", "ausente"):
+            self.barra_progresso_cadastro.set(progresso)
+            nome_produto = f"{produto['codigo']} - {produto['nome']}"
+            if estado == "existente":
+                texto = f"Já cadastrado: {nome_produto}"
+                self.status_cadastro.configure(
+                    text=f"Consulta {indice}/{total} | Produto já cadastrado"
+                )
+            else:
+                texto = f"Não encontrado; será cadastrado: {nome_produto}"
+                self.status_cadastro.configure(
+                    text=f"Consulta {indice}/{total} | Produto novo"
+                )
+            self.lista_cadastro.insert("end", f"{texto}\n")
+            self.lista_cadastro.see("end")
+            return
+        if estado == "consulta_interrompida":
+            self.status_cadastro.configure(
+                text=(
+                    "Consulta interrompida. Nenhum produto novo foi "
+                    "enviado para cadastro."
+                )
+            )
+            return
         if estado == "preparando":
             self.status_cadastro.configure(
-                text=f"0/{total} produtos enviados ao GDOOR"
+                text=(
+                    f"{self.produtos_existentes} já cadastrado(s); "
+                    f"0/{total} produto(s) novo(s) no cadastro"
+                )
             )
+            self.barra_progresso_cadastro.set(0)
             return
 
         if estado == "interrompido":
@@ -548,8 +599,8 @@ class NFeAutoEntry:
         if estado == "processando":
             self.status_cadastro.configure(
                 text=(
-                    f"Processando {indice}/{total} | "
-                    f"{indice - 1} enviado(s)"
+                    f"Processando produto novo {indice}/{total} | "
+                    f"{self.produtos_existentes} já existente(s)"
                 )
             )
             self.lista_cadastro.insert(
@@ -988,6 +1039,7 @@ class NFeAutoEntry:
     def selecionar_nota(self):
 
         self.limpar_conteudo()
+        self.caminho_xml_nota = None
 
         titulo = ctk.CTkLabel(
             self.conteudo,
@@ -1014,6 +1066,25 @@ class NFeAutoEntry:
 
         self.checkbox_ibscbs.pack(pady=15)
 
+        self.botoes_importacao_nota = ctk.CTkFrame(
+            self.conteudo,
+            fg_color="transparent",
+        )
+
+        self.btn_selecionar_xml_nota = ctk.CTkButton(
+            self.botoes_importacao_nota,
+            text="Selecionar XML",
+            height=40,
+            command=self.selecionar_xml_nota,
+        )
+        self.btn_selecionar_xml_nota.pack(side="left", padx=8)
+
+        self.label_xml_nota = ctk.CTkLabel(
+            self.conteudo,
+            text="Nenhum XML selecionado.",
+        )
+        self.label_xml_nota.pack(pady=(5, 10))
+
         self.campos_adicionais = ctk.CTkFrame(
             self.conteudo,
             fg_color="transparent"
@@ -1024,16 +1095,34 @@ class NFeAutoEntry:
             text="",
             wraplength=650
         )
-        self.status_importacao.pack(pady=(5, 0))
+        self.status_importacao.pack(pady=(0, 5))
+        self.botoes_importacao_nota.pack(pady=(5, 10))
 
         self.btn_iniciar = ctk.CTkButton(
-            self.conteudo,
+            self.botoes_importacao_nota,
             text="Iniciar importação",
             height=40,
-            command=self.iniciar_importacao
+            command=self.iniciar_importacao,
+            state="disabled",
         )
 
-        self.btn_iniciar.pack(pady=25)
+        self.btn_iniciar.pack(side="left", padx=8)
+
+    def selecionar_xml_nota(self):
+        caminho_arquivo = filedialog.askopenfilename(
+            parent=self.root,
+            title="Selecione o XML da nota fiscal",
+            filetypes=[("Arquivos XML", "*.xml"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho_arquivo:
+            return
+
+        self.caminho_xml_nota = Path(caminho_arquivo)
+        self.label_xml_nota.configure(
+            text=f"XML selecionado: {self.caminho_xml_nota.name}"
+        )
+        self.status_importacao.configure(text="")
+        self.btn_iniciar.configure(state="normal")
 
     def alternar_ibscbs(self):
 
@@ -1061,12 +1150,17 @@ class NFeAutoEntry:
         if not id_nota:
             return
 
-        arquivos_xml = sorted(obter_pasta_notas().glob("*.xml"))
-        if not arquivos_xml:
+        caminho_xml = self.caminho_xml_nota
+        if caminho_xml is None or not caminho_xml.is_file():
+            self.status_importacao.configure(
+                text="Selecione um arquivo XML válido para importar.",
+                text_color="#E74C3C",
+            )
             return
 
         importar_ibscbs = bool(self.checkbox_ibscbs.get())
         self.status_importacao.configure(text="Importando nota...")
+        self.btn_selecionar_xml_nota.configure(state="disabled")
         self.btn_iniciar.configure(
             state="disabled",
             text="Importando...",
@@ -1076,7 +1170,7 @@ class NFeAutoEntry:
         self.btn_notas.configure(state="disabled")
         threading.Thread(
             target=self.executar_importacao_nota,
-            args=(id_nota, arquivos_xml, importar_ibscbs),
+            args=(id_nota, caminho_xml, importar_ibscbs),
             daemon=True
         ).start()
 
@@ -1125,19 +1219,18 @@ class NFeAutoEntry:
     def executar_importacao_nota(
         self,
         id_nota,
-        arquivos_xml,
+        caminho_xml,
         importar_ibscbs=False,
     ):
         try:
-            for arquivo in arquivos_xml:
-                dados_nota = ler_xml_nfe(arquivo)
-                self.sessao_gdoor.executar(
-                    lancar_no_sistema,
-                    dados_nota,
-                    id_nota=id_nota,
-                    aguardar_selecao_manual=self.aguardar_selecao_manual,
-                    importar_ibscbs=importar_ibscbs,
-                )
+            dados_nota = ler_xml_nfe(caminho_xml)
+            self.sessao_gdoor.executar(
+                lancar_no_sistema,
+                dados_nota,
+                id_nota=id_nota,
+                aguardar_selecao_manual=self.aguardar_selecao_manual,
+                importar_ibscbs=importar_ibscbs,
+            )
             mensagem = "Importação concluída. Confira os dados no Gdoor."
         except Exception as exc:
             mensagem = f"Erro na importação: {exc}"
@@ -1153,10 +1246,16 @@ class NFeAutoEntry:
             text_color=("gray10", "#DCE4EE")
         )
         self.btn_iniciar.configure(
-            state="normal",
+            state=(
+                "normal"
+                if self.caminho_xml_nota
+                and self.caminho_xml_nota.is_file()
+                else "disabled"
+            ),
             text="Iniciar importação",
             command=self.iniciar_importacao
         )
+        self.btn_selecionar_xml_nota.configure(state="normal")
         self.btn_produtos.configure(state="normal")
         self.btn_notas.configure(state="normal")
 
