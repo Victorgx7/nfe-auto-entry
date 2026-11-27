@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import time
 import re
 import unicodedata
@@ -10,6 +11,12 @@ from threading import Event, Thread
 from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
+
+if getattr(sys, "frozen", False):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(
+        Path(getattr(sys, "_MEIPASS")) / "ms-playwright"
+    )
+
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
@@ -42,18 +49,19 @@ def carregar_configuracao():
                 "",
             )
         ),
-        "email": os.getenv("GDOOR_EMAIL"),
-        "password": os.getenv("GDOOR_PASSWORD"),
         "products_url": os.getenv(
             "GDOOR_PRODUCTS_URL",
             "https://app.gdoorweb.com.br/cadastros/produtos/lista",
         ),
     }
-    if not configuracao["email"] or not configuracao["password"]:
-        raise RuntimeError(
-            "Configure GDOOR_EMAIL e GDOOR_PASSWORD no arquivo .env."
-        )
     return configuracao
+
+
+def exigir_credenciais(email, password):
+    if not email or not password:
+        raise RuntimeError(
+            "Informe o email e a senha pela interface de login."
+        )
 
 
 def verificar_redirecionamento_atualizacao(page):
@@ -169,23 +177,30 @@ def abrir_consulta_produtos(page=None):
     return True
 
 
-def buscar_produto_por_codigo_ou_gtin(page, produto):
-    gtin = str(produto.get("ean") or "").strip()
-    codigo = str(produto.get("codigo") or "").strip()
-    termo = gtin if gtin and gtin.upper() != "SEM GTIN" else codigo
-    if not termo:
-        return False
-
-    campo_codigo_gtin = page.locator(
-        'input[data-placeholder="Código/GTIN"]'
-    )
+def buscar_produto_por_descricao(
+    page,
+    produto,
+    aguardar_selecao_manual=None,
+):
+    produto_input = page.get_by_role("combobox", name="Produto")
+    produto_input.fill(produto["nome"])
+    opcao_produto = page.get_by_role("option").filter(
+        has_text=produto["nome"]
+    ).first
     try:
-        campo_codigo_gtin.wait_for(state="visible", timeout=2000)
-    except PlaywrightTimeout:
+        opcao_produto.wait_for(state="visible", timeout=5000)
+    except PlaywrightTimeout as exc:
+        if aguardar_selecao_manual is None:
+            raise RuntimeError(
+                "Produto nao encontrado automaticamente. "
+                f"Codigo: {produto['codigo']} | "
+                f"Nome: {produto['nome']}"
+            ) from exc
+        aguardar_selecao_manual(produto)
         return False
 
-    campo_codigo_gtin.fill(termo)
-    campo_codigo_gtin.press("Enter")
+    if opcao_produto.is_visible():
+        opcao_produto.click()
     return True
 
 
@@ -208,6 +223,8 @@ def lancar_no_sistema(
     page=None,
     aguardar_selecao_manual=None,
     importar_ibscbs=False,
+    email=None,
+    password=None,
 ):
     configuracao = carregar_configuracao()
 
@@ -226,48 +243,11 @@ def lancar_no_sistema(
             page.locator(
                 'button[mattooltip="Adicionar produto (Insert)"]'
             ).click()
-            produto_input = page.get_by_role("combobox", name="Produto")
-            produto_input.fill(produto["codigo"])
-            opcao_produto = page.get_by_role("option").filter(
-                has_text=produto["codigo"]
-            ).first
-
-            selecao_automatica = True
-            selecao_por_gtin = False
-            try:
-                opcao_produto.wait_for(state="visible", timeout=3000)
-            except PlaywrightTimeout:
-                selecao_por_gtin = buscar_produto_por_codigo_ou_gtin(
-                    page,
-                    produto,
-                )
-                if not selecao_por_gtin:
-                    produto_input.press("Control+A")
-                    produto_input.fill(produto["nome"])
-                    opcao_produto = page.get_by_role("option").filter(
-                        has_text=produto["nome"]
-                    ).first
-                    try:
-                        opcao_produto.wait_for(
-                            state="visible",
-                            timeout=5000,
-                        )
-                    except PlaywrightTimeout:
-                        if aguardar_selecao_manual is None:
-                            raise RuntimeError(
-                                "Produto nao encontrado automaticamente. "
-                                f"Codigo: {produto['codigo']} | "
-                                f"Nome: {produto['nome']}"
-                            )
-                        selecao_automatica = False
-                        aguardar_selecao_manual(produto)
-
-            if (
-                selecao_automatica
-                and not selecao_por_gtin
-                and opcao_produto.is_visible()
-            ):
-                opcao_produto.click()
+            buscar_produto_por_descricao(
+                page,
+                produto,
+                aguardar_selecao_manual=aguardar_selecao_manual,
+            )
             page.wait_for_timeout(1000)
 
             quantidade = page.locator(
@@ -319,6 +299,7 @@ def lancar_no_sistema(
         return
 
     with sync_playwright() as playwright:
+        exigir_credenciais(email, password)
         browser = playwright.chromium.launch(headless=False)
         nova_pagina = browser.new_page()
         nova_pagina.goto(
@@ -329,8 +310,8 @@ def lancar_no_sistema(
         verificar_redirecionamento_atualizacao(nova_pagina)
         fazer_login(
             nova_pagina,
-            configuracao["email"],
-            configuracao["password"]
+            email,
+            password,
         )
         lancar_no_sistema(
             dados_nota,
@@ -767,12 +748,33 @@ def consultar_produto_na_lista(page, termo, timeout_segundos=8):
     return False
 
 
+def produto_ja_cadastrado(page, produto):
+    for termo, timeout_segundos in (
+        (produto["nome"], 8),
+        (produto["codigo"], 2),
+    ):
+        if encontrar_campo_busca(page) is None:
+            raise RuntimeError(
+                "Não foi possível consultar os produtos cadastrados. "
+                "Nenhum produto foi enviado para cadastro."
+            )
+        if consultar_produto_na_lista(
+            page,
+            termo,
+            timeout_segundos=timeout_segundos,
+        ):
+            return True
+    return False
+
+
 def consultar_produtos_no_sistema(
     caminhos_arquivos,
     callback=None,
     page=None,
     stop_event=None,
     progress_callback=None,
+    email=None,
+    password=None,
 ):
     configuracao = carregar_configuracao()
     resultados = []
@@ -831,6 +833,7 @@ def consultar_produtos_no_sistema(
     if page is not None:
         consultar_na_pagina(page)
     else:
+        exigir_credenciais(email, password)
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=False)
             try:
@@ -841,8 +844,8 @@ def consultar_produtos_no_sistema(
                 )
                 fazer_login(
                     nova_pagina,
-                    configuracao["email"],
-                    configuracao["password"],
+                    email,
+                    password,
                 )
                 consultar_na_pagina(nova_pagina)
             finally:
@@ -1056,6 +1059,8 @@ def importar_produtos_no_sistema(
     progress_callback=None,
     stop_event=None,
     aguardar_correcao_manual=None,
+    email=None,
+    password=None,
 ):
     configuracao = carregar_configuracao()
     produtos = ler_produtos_xml(caminho_arquivo)
@@ -1070,6 +1075,47 @@ def importar_produtos_no_sistema(
     )
 
     if page is not None:
+        if progress_callback:
+            progress_callback(0, len(produtos), None, "consultando")
+
+        abrir_consulta_produtos(page)
+        produtos_para_cadastrar = []
+        for indice, produto in enumerate(produtos, start=1):
+            if stop_event and stop_event.is_set():
+                if progress_callback:
+                    progress_callback(
+                        indice - 1,
+                        len(produtos),
+                        None,
+                        "consulta_interrompida",
+                    )
+                return []
+
+            encontrado = produto_ja_cadastrado(page, produto)
+            if encontrado:
+                estado_consulta = "existente"
+            else:
+                estado_consulta = "ausente"
+                produtos_para_cadastrar.append(produto)
+            if progress_callback:
+                progress_callback(
+                    indice,
+                    len(produtos),
+                    produto,
+                    estado_consulta,
+                )
+
+        if stop_event and stop_event.is_set():
+            if progress_callback:
+                progress_callback(
+                    len(produtos),
+                    len(produtos),
+                    None,
+                    "consulta_interrompida",
+                )
+            return []
+
+        produtos = produtos_para_cadastrar
         if progress_callback:
             progress_callback(0, len(produtos), None, "preparando")
 
@@ -1130,6 +1176,7 @@ def importar_produtos_no_sistema(
             produtos_enviados.append(produto)
         return produtos_enviados
 
+    exigir_credenciais(email, password)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
         page = browser.new_page()
@@ -1139,8 +1186,8 @@ def importar_produtos_no_sistema(
         )
         fazer_login(
             page,
-            configuracao["email"],
-            configuracao["password"],
+            email,
+            password,
         )
 
         for indice, produto in enumerate(produtos, start=1):
