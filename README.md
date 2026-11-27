@@ -28,17 +28,14 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-3. Copie `.env.example` para `.env`.
-4. Preencha as variáveis no arquivo `.env` com os dados do seu ambiente autorizado:
+3. Opcionalmente, copie `.env.example` para `.env` e ajuste as URLs do seu ambiente autorizado:
 
 | Variável | Descrição |
 |---|---|
 | `GDOOR_BASE_URL` | Origem do sistema, por exemplo `https://app.gdoorweb.com.br` |
 | `GDOOR_PRODUCTS_URL` | Endereço da tela de cadastro de produtos |
-| `GDOOR_EMAIL` | Usuário de acesso |
-| `GDOOR_PASSWORD` | Senha de acesso |
 
-O arquivo `.env` é ignorado pelo Git e não deve ser enviado ao repositório.
+O usuário informa email e senha na tela de login ao abrir o aplicativo. Essas credenciais não são lidas nem armazenadas no `.env`.
 
 ## Arquivos XML
 
@@ -66,6 +63,17 @@ Depois de abrir o Gdoor:
 - **Consultar produtos no sistema**: consulta os itens dos XMLs em `notasXMLs/` e mostra o progresso, a quantidade consultada e quantos não foram encontrados.
 - **Cadastrar produtos**: selecione um XML. A aplicação processa os produtos do arquivo, preenche os campos de cadastro e aciona Salvar. Não há verificação automática de duplicidade; confira os produtos e os resultados no Gdoor.
 - **Importar nota**: informe o identificador da nota. A aplicação lê os XMLs de `notasXMLs/` e preenche a nota no sistema. Revise as informações e salve manualmente no Gdoor.
+
+## Executável independente (Windows)
+
+O arquivo `NFeAutoEntry.spec` gera um único `.exe` contendo a aplicação, as dependências Python e o Chromium do Playwright. Execute os comandos abaixo na pasta raiz do projeto:
+
+```powershell
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean .\NFeAutoEntry.spec
+```
+
+O resultado será `dist\NFeAutoEntry.exe`. A pessoa que usar o programa precisa baixar somente esse executável; email e senha são informados na tela de login. Como o navegador vai dentro do arquivo, o `.exe` será grande.
 
 ## Testes
 
